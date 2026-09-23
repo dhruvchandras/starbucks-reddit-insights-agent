@@ -21,6 +21,10 @@
  *   npm run backfill -- --sync             skip the Batch API (2x cost, no wait)
  *   npm run backfill -- --skip-fetch       reuse posts already in the DB
  *   npm run backfill -- --back-issues 12   weekly reports to write (default 12)
+ *
+ * Submitted batches are recorded in `batch_groups` before polling begins, so a
+ * run that dies mid-poll can be resumed by the next one instead of abandoning
+ * results that have already been billed.
  */
 import "dotenv/config";
 import { config } from "dotenv";
@@ -39,7 +43,12 @@ import { getDb, addDays } from "../src/lib/db";
 import { SCHEMA_STATEMENTS } from "../src/lib/schema";
 import {
   getAllAggregates,
+  getBatchGroups,
   getFetchedDays,
+  getPendingBatchIds,
+  getPostsByIds,
+  markBatchApplied,
+  saveBatchGroups,
   markDaysFetched,
   getWeeksNeedingReports,
   recomputeAggregates,
@@ -230,65 +239,126 @@ async function extractSync(groups: Post[][]): Promise<number> {
   return done;
 }
 
+/**
+ * Collect a batch that has already been submitted, using the post mapping
+ * stored at submit time. Safe to call on any batch id, from any process.
+ */
+async function collectBatch(batchId: string): Promise<number> {
+  const client = getClient();
+  const mapping = await getBatchGroups(batchId);
+  if (mapping.size === 0) {
+    log(`batch ${batchId}: no stored mapping — cannot attribute results, skipping`);
+    return 0;
+  }
+
+  let status = await client.messages.batches.retrieve(batchId);
+  while (status.processing_status !== "ended") {
+    const c = status.request_counts;
+    log(
+      `  ${batchId} ${status.processing_status} | succeeded ${c.succeeded} | errored ${c.errored} | processing ${c.processing}`,
+    );
+    await sleep(20_000);
+    status = await client.messages.batches.retrieve(batchId);
+  }
+
+  let done = 0;
+  const appliedIds: string[] = [];
+
+  for await (const entry of await client.messages.batches.results(batchId)) {
+    const postIds = mapping.get(entry.custom_id);
+    if (!postIds) continue;
+
+    if (entry.result.type !== "succeeded") {
+      log(`  ${entry.custom_id}: ${entry.result.type} — will be retried by a later run`);
+      continue;
+    }
+
+    const msg = entry.result.message;
+    usage.input += msg.usage.input_tokens;
+    usage.output += msg.usage.output_tokens;
+    usage.cacheRead += msg.usage.cache_read_input_tokens ?? 0;
+    usage.cacheCreate += msg.usage.cache_creation_input_tokens ?? 0;
+
+    const text = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+
+    // Re-load the exact posts this request covered, in the order they were
+    // rendered, so the model's `ref` indices line up.
+    const posts = await getPostsByIds(postIds);
+    const extractions = parseExtractionText(text, posts);
+
+    if (extractions.length === 0) {
+      log(`  ${entry.custom_id}: unparseable output — skipped`);
+      continue;
+    }
+    await upsertExtractions(extractions);
+    done += extractions.length;
+    appliedIds.push(entry.custom_id);
+
+    if (appliedIds.length % 100 === 0) {
+      await markBatchApplied(batchId, appliedIds.splice(0));
+      log(`  ${batchId}: ${done} posts applied | $${costSoFar(true).toFixed(2)}`);
+    }
+  }
+
+  await markBatchApplied(batchId, appliedIds.length ? appliedIds : undefined);
+  log(`batch ${batchId} collected: ${done} posts | $${costSoFar(true).toFixed(2)}`);
+  return done;
+}
+
+/** Collect anything a previous run submitted but never finished applying. */
+async function resumePendingBatches(): Promise<number> {
+  const pending = await getPendingBatchIds();
+  if (pending.length === 0) return 0;
+
+  log(`found ${pending.length} unfinished batch(es) from an earlier run — collecting first`);
+  let done = 0;
+  for (const id of pending) {
+    try {
+      done += await collectBatch(id);
+    } catch (err) {
+      log(`batch ${id}: collect FAILED (${(err as Error).message})`);
+    }
+  }
+  return done;
+}
+
 async function extractViaBatch(groups: Post[][]): Promise<number> {
   const client = getClient();
-  const byCustomId = new Map<string, Post[]>();
-
-  const requests = groups.map((group, i) => {
-    const id = `g${i}`;
-    byCustomId.set(id, group);
-    return { custom_id: id, params: buildExtractionParams(group) };
-  });
-
-  log(`submitting ${requests.length} batch requests (~${groups.flat().length} posts)`);
+  let done = 0;
 
   // The Batches API caps at 100k requests / 256MB per batch.
-  let done = 0;
-  for (const slice of chunk(requests, 10_000)) {
+  for (const slice of chunk(
+    groups.map((group, i) => ({ key: `g${i}`, group })),
+    10_000,
+  )) {
+    const requests = slice.map(({ key, group }) => ({
+      custom_id: key,
+      params: buildExtractionParams(group),
+    }));
+
+    log(`submitting ${requests.length} batch requests (~${slice.reduce((n, s) => n + s.group.length, 0)} posts)`);
+
     const batch = await client.messages.batches.create({
-      requests: slice as never,
+      requests: requests as never,
     });
-    log(`batch ${batch.id} submitted; polling…`);
+    log(`batch ${batch.id} submitted`);
 
-    let status = batch;
-    while (status.processing_status !== "ended") {
-      await sleep(20_000);
-      status = await client.messages.batches.retrieve(batch.id);
-      const c = status.request_counts;
-      log(
-        `  ${status.processing_status} | done ${c.succeeded}/${slice.length} | errored ${c.errored} | processing ${c.processing}`,
-      );
-    }
+    // Persist the mapping immediately. Until this lands, a crash would leave a
+    // running, billable batch whose results cannot be attributed to any post —
+    // which is exactly how an earlier run lost its work.
+    await saveBatchGroups(
+      batch.id,
+      slice.map(({ key, group }) => ({
+        customId: key,
+        postIds: group.map((p) => p.id),
+      })),
+    );
+    log(`batch ${batch.id} mapping persisted; polling…`);
 
-    for await (const entry of await client.messages.batches.results(batch.id)) {
-      const posts = byCustomId.get(entry.custom_id);
-      if (!posts) continue;
-
-      if (entry.result.type !== "succeeded") {
-        log(`  ${entry.custom_id}: ${entry.result.type} — skipped`);
-        continue;
-      }
-
-      const msg = entry.result.message;
-      usage.input += msg.usage.input_tokens;
-      usage.output += msg.usage.output_tokens;
-      usage.cacheRead += msg.usage.cache_read_input_tokens ?? 0;
-      usage.cacheCreate += msg.usage.cache_creation_input_tokens ?? 0;
-
-      const text = msg.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("");
-
-      const extractions = parseExtractionText(text, posts);
-      if (extractions.length === 0) {
-        log(`  ${entry.custom_id}: unparseable output — skipped`);
-        continue;
-      }
-      await upsertExtractions(extractions);
-      done += extractions.length;
-    }
-    log(`batch ${batch.id} applied: ${done} posts | $${costSoFar(true).toFixed(2)}`);
+    done += await collectBatch(batch.id);
   }
 
   return done;
@@ -372,6 +442,13 @@ async function main(): Promise<void> {
     log(`phase 1 complete: ${fetched} posts seen`);
   } else {
     log("phase 1 skipped (--skip-fetch)");
+  }
+
+  // Collect anything an earlier run submitted but died before applying. Those
+  // batches are already billed, so this recovers paid work rather than redoing it.
+  if (!args.sync) {
+    const recovered = await resumePendingBatches();
+    if (recovered > 0) log(`recovered ${recovered} posts from unfinished batches`);
   }
 
   log("── phase 2: selecting posts to tag ──");

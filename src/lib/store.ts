@@ -155,6 +155,88 @@ export async function getFetchedDays(
   return new Set(rows.map((r) => toIsoDate(r.day)));
 }
 
+// ─── Batch group mapping ─────────────────────────────────────────────────────
+
+/**
+ * Persist which posts each Batch API request covers, so a submitted batch can
+ * be collected by a later process. Written immediately after submission — if
+ * this is missing, the batch still runs and still bills, but its results can
+ * never be attributed to posts.
+ */
+export async function saveBatchGroups(
+  batchId: string,
+  groups: { customId: string; postIds: string[] }[],
+): Promise<void> {
+  if (groups.length === 0) return;
+  const sql = getDb();
+
+  for (let i = 0; i < groups.length; i += 200) {
+    const chunk = groups.slice(i, i + 200);
+    const values: unknown[] = [];
+    const tuples = chunk.map((g, j) => {
+      const b = j * 3;
+      values.push(batchId, g.customId, g.postIds);
+      return `($${b + 1},$${b + 2},$${b + 3})`;
+    });
+    await sql.query(
+      `INSERT INTO batch_groups (batch_id, custom_id, post_ids)
+       VALUES ${tuples.join(",")}
+       ON CONFLICT (batch_id, custom_id) DO NOTHING`,
+      values,
+    );
+  }
+}
+
+/** Batch ids that were submitted but never fully collected. */
+export async function getPendingBatchIds(): Promise<string[]> {
+  const sql = getDb();
+  const rows = (await sql.query(
+    `SELECT DISTINCT batch_id FROM batch_groups WHERE applied = false ORDER BY batch_id`,
+  )) as { batch_id: string }[];
+  return rows.map((r) => r.batch_id);
+}
+
+export async function getBatchGroups(
+  batchId: string,
+): Promise<Map<string, string[]>> {
+  const sql = getDb();
+  const rows = (await sql.query(
+    `SELECT custom_id, post_ids FROM batch_groups WHERE batch_id = $1`,
+    [batchId],
+  )) as { custom_id: string; post_ids: string[] }[];
+  return new Map(rows.map((r) => [r.custom_id, r.post_ids]));
+}
+
+export async function markBatchApplied(
+  batchId: string,
+  customIds?: string[],
+): Promise<void> {
+  const sql = getDb();
+  if (customIds && customIds.length > 0) {
+    await sql.query(
+      `UPDATE batch_groups SET applied = true WHERE batch_id = $1 AND custom_id = ANY($2)`,
+      [batchId, customIds],
+    );
+  } else {
+    await sql.query(
+      `UPDATE batch_groups SET applied = true WHERE batch_id = $1`,
+      [batchId],
+    );
+  }
+}
+
+/** Load posts by id, preserving the given order. */
+export async function getPostsByIds(ids: string[]): Promise<Post[]> {
+  if (ids.length === 0) return [];
+  const sql = getDb();
+  const rows = (await sql.query(`SELECT * FROM posts WHERE id = ANY($1)`, [
+    ids,
+  ])) as Record<string, unknown>[];
+
+  const byId = new Map(rows.map((r) => [String(r.id), rowToPost(r)]));
+  return ids.map((id) => byId.get(id)).filter((p): p is Post => p !== undefined);
+}
+
 /** Record days as fetched. Counts are kept for spotting anomalous days later. */
 export async function markDaysFetched(
   subreddit: Subreddit,
@@ -612,11 +694,12 @@ export async function saveQA(
   question: string,
   answer: string,
   citations: unknown[],
+  clientIp?: string,
 ): Promise<void> {
   const sql = getDb();
   await sql.query(
-    `INSERT INTO qa_history (question, answer, citations) VALUES ($1,$2,$3)`,
-    [question, answer, JSON.stringify(citations)],
+    `INSERT INTO qa_history (question, answer, citations, client_ip) VALUES ($1,$2,$3,$4)`,
+    [question, answer, JSON.stringify(citations), clientIp ?? null],
   );
 }
 

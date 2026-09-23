@@ -91,6 +91,39 @@ export const SCHEMA_STATEMENTS: string[] = [
     asked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
 
+  // The site is public, and both /api/ask and /api/insights/refresh spend real
+  // Anthropic credits per call. Requests are metered here so a crawler cannot
+  // run up the bill.
+  `ALTER TABLE qa_history ADD COLUMN IF NOT EXISTS client_ip TEXT`,
+  `CREATE INDEX IF NOT EXISTS qa_history_recent_idx ON qa_history (asked_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS qa_history_ip_idx ON qa_history (client_ip, asked_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS rate_events (
+    id        SERIAL PRIMARY KEY,
+    bucket    TEXT NOT NULL,
+    client_ip TEXT,
+    at        TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS rate_events_lookup_idx ON rate_events (bucket, at DESC)`,
+
+  // Maps each Batch API request back to the posts it covers.
+  //
+  // The Batches API returns results keyed by `custom_id`, and a positional id
+  // ("g0", "g1", ...) is only meaningful to the process that built the batch.
+  // When a backfill process died mid-poll, every completed — and billed —
+  // result became unmappable, because the selection that produced the ordering
+  // could no longer be reproduced. Persisting the mapping makes a submitted
+  // batch recoverable by any later run.
+  `CREATE TABLE IF NOT EXISTS batch_groups (
+    batch_id   TEXT NOT NULL,
+    custom_id  TEXT NOT NULL,
+    post_ids   TEXT[] NOT NULL,
+    applied    BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (batch_id, custom_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS batch_groups_pending_idx ON batch_groups (applied, batch_id)`,
+
   // Ledger of days actually fetched from Arctic Shift, one row per
   // (subreddit, day).
   //

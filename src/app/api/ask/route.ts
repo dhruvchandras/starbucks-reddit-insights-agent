@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { answerQuestion } from "@/lib/claude";
 import { saveQA, searchPosts } from "@/lib/store";
+import { ASK_LIMIT, checkRateLimit, clientIp, recordRateEvent } from "@/lib/ratelimit";
 
 export const maxDuration = 300;
 
@@ -24,6 +25,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The site is public and every answer costs an Opus call, so meter it.
+  const ip = clientIp(req);
+  const gate = await checkRateLimit(ASK_LIMIT, ip);
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: gate.reason },
+      { status: 429, headers: { "Retry-After": String(gate.retryAfterSeconds ?? 3600) } },
+    );
+  }
+
   try {
     const retrieved = await searchPosts(question, 40);
 
@@ -37,7 +48,8 @@ export async function POST(req: NextRequest) {
     }
 
     const { answer, citations } = await answerQuestion(question, retrieved);
-    await saveQA(question, answer, citations);
+    await saveQA(question, answer, citations, ip);
+    await recordRateEvent(ASK_LIMIT.bucket, ip);
 
     return NextResponse.json({
       answer,

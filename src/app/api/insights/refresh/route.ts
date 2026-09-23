@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { writeNarrative } from "@/lib/claude";
 import { getAllAggregates, recomputeAggregates, saveSnapshot } from "@/lib/store";
+import { REFRESH_LIMIT, checkRateLimit, clientIp, recordRateEvent } from "@/lib/ratelimit";
 
 export const maxDuration = 300;
 
@@ -13,7 +14,18 @@ export const maxDuration = 300;
  * baseline was built once by scripts/backfill.mjs; refreshing is seconds and
  * cents, not hours and dollars.
  */
-export async function POST() {
+export async function POST(req: NextRequest) {
+  // Recomputes every aggregate and writes a fresh Opus narrative. The data only
+  // changes weekly, so a tight cap costs nothing and stops a held-down button.
+  const ip = clientIp(req);
+  const gate = await checkRateLimit(REFRESH_LIMIT, ip);
+  if (!gate.ok) {
+    return NextResponse.json(
+      { error: gate.reason },
+      { status: 429, headers: { "Retry-After": String(gate.retryAfterSeconds ?? 3600) } },
+    );
+  }
+
   try {
     await recomputeAggregates();
 
@@ -47,6 +59,7 @@ export async function POST() {
 
     const narrative = await writeNarrative(rows);
     await saveSnapshot(narrative, weeks.length, false);
+    await recordRateEvent(REFRESH_LIMIT.bucket, ip);
 
     return NextResponse.json({
       ok: true,
