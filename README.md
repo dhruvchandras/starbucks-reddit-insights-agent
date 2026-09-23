@@ -44,10 +44,17 @@ Reddit's own API stops at ~1000 posts per subreddit, so history comes from
 successor. Three years is ~117,000 posts across both subs, so the backfill keeps the top 60
 per subreddit per week by engagement (~18,700 posts).
 
-Coverage is derived from the `posts` table itself (`MIN`/`MAX` of `created_utc` per
-subreddit), not a stored cursor, and both the earlier and later gaps are filled. That means
-widening `--years` later correctly backfills the newly-exposed history instead of assuming
-it is already covered.
+Coverage is an explicit per-day ledger (`fetched_days`), not a cursor and not `MIN`/`MAX`
+over `posts`. A forward-only cursor marks all history covered after a short run; `MIN`/`MAX`
+assumes the fetched range is contiguous, so an interrupt mid-range leaves a hole that reads
+back as covered. Both of those silently skipped years of history during development. The
+ledger also distinguishes a genuinely quiet day from an unfetched one.
+
+Batches are recoverable. Each Batch API request's post IDs are written to `batch_groups`
+immediately after submission, before polling starts, so a run that dies mid-poll is resumed
+by the next one. Without this, a positional `custom_id` ("g0", "g1", …) is meaningless
+outside the process that created it, and completed — billed — results cannot be attributed
+to any post. Every run collects unfinished batches before submitting new ones.
 
 This runs **locally**, not on Vercel — it takes tens of minutes and Vercel functions cap at 300s.
 
@@ -85,6 +92,19 @@ measured at ~52s for a no-op run and ~120s for a full week.
 
 It is also idempotent and self-healing: already-tagged posts are skipped, and a sweep at the
 end tags anything from the last 3 weeks that an earlier failure left behind.
+
+## Public deployment
+
+The site is public and shareable. Two endpoints spend Anthropic credits per call, so both
+are rate limited (counters live in Postgres, since Vercel instances do not share memory and
+an in-memory counter resets on cold start):
+
+| Endpoint | Per IP | Global | Window |
+|---|---|---|---|
+| `/api/ask` | 12 | 150 | 1 hour |
+| `/api/insights/refresh` | 3 | 12 | 1 hour |
+
+Limits fail open — a metering error returns the answer rather than taking the feature down.
 
 ## Models
 

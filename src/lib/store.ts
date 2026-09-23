@@ -77,9 +77,15 @@ export async function upsertComments(comments: PostComment[]): Promise<void> {
   }
 }
 
-export async function upsertExtractions(rows: Extraction[]): Promise<void> {
-  if (rows.length === 0) return;
+export async function upsertExtractions(input: Extraction[]): Promise<void> {
+  if (input.length === 0) return;
   const sql = getDb();
+
+  // A multi-row upsert cannot touch the same primary key twice in one
+  // statement, and callers assemble these from model output, so dedupe here
+  // rather than trusting every call site. Last write wins.
+  const byPost = new Map(input.map((e) => [e.postId, e]));
+  const rows = [...byPost.values()];
 
   for (let i = 0; i < rows.length; i += 200) {
     const chunk = rows.slice(i, i + 200);

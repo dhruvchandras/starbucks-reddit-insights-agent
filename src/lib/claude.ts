@@ -116,10 +116,18 @@ export function toExtractions(
 ): Extraction[] {
   const now = new Date().toISOString();
   const out: Extraction[] = [];
+  const seen = new Set<string>();
 
   for (const item of items) {
     const post = posts[item.ref];
     if (!post) continue; // model returned a ref we did not send
+
+    // The model occasionally emits the same ref twice. Two rows for one post
+    // makes Postgres reject the whole statement ("ON CONFLICT DO UPDATE command
+    // cannot affect row a second time"), which would discard the entire group.
+    // First tagging wins.
+    if (seen.has(post.id)) continue;
+    seen.add(post.id);
     out.push({
       postId: post.id,
       sentiment: Math.max(-1, Math.min(1, item.sentiment)),
