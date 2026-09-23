@@ -1,0 +1,133 @@
+:root {
+  --bg: #f7f6f3;
+  --surface: #ffffff;
+  --surface-2: #f2f0ec;
+  --border: #e2ded6;
+  --border-strong: #cfc9bd;
+  --text: #1c1a17;
+  --text-dim: #6b655c;
+  --text-faint: #979186;
+  --accent: #1e6b4f;
+  --accent-soft: #e6f0ea;
+  --positive: #2f7d5d;
+  --negative: #b4432e;
+  --neutral: #8a8375;
+  --warn-bg: #fdf3e3;
+  --warn-border: #e8d5ad;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14130f;
+    --surface: #1c1b17;
+    --surface-2: #23221d;
+    --border: #2f2d27;
+    --border-strong: #423f37;
+    --text: #edeae3;
+    --text-dim: #a29c90;
+    --text-faint: #736d62;
+    --accent: #5fbf93;
+    --accent-soft: #1b2e26;
+    --positive: #5fbf93;
+    --negative: #e07a63;
+    --neutral: #8a8375;
+    --warn-bg: #2a2115;
+    --warn-border: #4a3b22;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #14130f;
+  --surface: #1c1b17;
+  --surface-2: #23221d;
+  --border: #2f2d27;
+  --border-strong: #423f37;
+  --text: #edeae3;
+  --text-dim: #a29c90;
+  --text-faint: #736d62;
+  --accent: #5fbf93;
+  --accent-soft: #1b2e26;
+  --positive: #5fbf93;
+  --negative: #e07a63;
+  --neutral: #8a8375;
+  --warn-bg: #2a2115;
+  --warn-border: #4a3b22;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.25;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ── Chart series palette ─────────────────────────────────────────────────
+   Validated with the dataviz palette validator (all-pairs, both modes):
+   CVD dE 9.2 light / 9.4 dark, normal-vision dE 24.0 / 20.9, all PASS.
+   Light-mode aqua sits at 2.74:1 contrast, so the chart carries the relief
+   the validator requires: a swatch legend, end-of-line labels and a table view.
+   Slots are fixed per category and never reassigned when a filter changes. */
+:root {
+  --series-barista: #2a78d6;
+  --series-customer: #eb6834;
+  --series-ops: #1baf7a;
+  --grid: #e6e2da;
+  --zero-line: #b8b2a6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --series-barista: #3987e5;
+    --series-customer: #d95926;
+    --series-ops: #199e70;
+    --grid: #2b2924;
+    --zero-line: #4d4940;
+  }
+}
+
+:root[data-theme="dark"] {
+  --series-barista: #3987e5;
+  --series-customer: #d95926;
+  --series-ops: #199e70;
+  --grid: #2b2924;
+  --zero-line: #4d4940;
+}

@@ -1,0 +1,11 @@
+node_modules
+.next
+tsconfig.tsbuildinfo
+next-env.d.ts
+.vercel
+*.log
+
+# Secrets — never commit. The .example file is the documented template and IS committed.
+.env
+.env.*
+!.env.local.example
