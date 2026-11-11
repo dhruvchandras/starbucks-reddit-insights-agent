@@ -9,7 +9,8 @@
     "lint": "next lint",
     "backfill": "tsx scripts/backfill.ts",
     "probe": "tsx scripts/probe.ts",
-    "setup-db": "tsx scripts/setup-db.ts"
+    "setup-db": "tsx scripts/setup-db.ts",
+    "export": "tsx scripts/export-data.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
